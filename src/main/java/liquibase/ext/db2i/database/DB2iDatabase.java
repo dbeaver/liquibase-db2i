@@ -1,11 +1,20 @@
 package liquibase.ext.db2i.database;
 
+import java.sql.ResultSet;
+import java.sql.Statement;
+
+import liquibase.CatalogAndSchema;
 import liquibase.Scope;
 import liquibase.database.DatabaseConnection;
+import liquibase.database.OfflineConnection;
 import liquibase.database.core.DB2Database;
+import liquibase.database.jvm.JdbcConnection;
 import liquibase.exception.DatabaseException;
 import liquibase.executor.ExecutorService;
+import liquibase.statement.core.GetViewDefinitionStatement;
 import liquibase.statement.core.RawSqlStatement;
+import liquibase.util.JdbcUtil;
+import liquibase.util.StringUtil;
 
 public class DB2iDatabase extends DB2Database {
 
@@ -36,10 +45,40 @@ public class DB2iDatabase extends DB2Database {
     public String getShortName() {
         return "db2i";
     }
-
+    
     @Override
-    public boolean supportsSchemas() {
-        return true;
+    public String getDefaultCatalogName() {
+        if (this.defaultCatalogName != null) {
+            return this.defaultCatalogName;
+        } else if (this.defaultSchemaName != null) {
+            return this.defaultSchemaName;
+        } else if (this.getConnection() == null) {
+            return null;
+        } else if (this.getConnection() instanceof OfflineConnection) {
+            return ((OfflineConnection)this.getConnection()).getSchema();
+        } else {
+            Statement stmt = null;
+            ResultSet rs = null;
+
+            try {
+                stmt = ((JdbcConnection)this.getConnection()).createStatement();
+                rs = stmt.executeQuery("SELECT CURRENT_SCHEMA FROM SYSIBM.SYSDUMMY1");
+                if (rs.next()) {
+                    String result = rs.getString(1);
+                    if (result != null) {
+                        this.defaultSchemaName = StringUtil.trimToNull(result);
+                    } else {
+                        this.defaultSchemaName = StringUtil.trimToNull(super.getDefaultSchemaName());
+                    }
+                }
+            } catch (Exception var7) {
+                throw new RuntimeException("Could not determine current schema", var7);
+            } finally {
+                JdbcUtil.close(rs, stmt);
+            }
+
+            return this.defaultSchemaName;
+        }
     }
 
     @Override
@@ -55,5 +94,17 @@ public class DB2iDatabase extends DB2Database {
             Scope.getCurrentScope().getLog(getClass()).info("Error checking for BOOLEAN type", e);
         }
         return false;
+    }
+    
+    @Override
+    public String getViewDefinition(CatalogAndSchema schema, final String viewName) throws DatabaseException {
+        schema = schema.customize(this);
+        String definition = Scope.getCurrentScope().getSingleton(ExecutorService.class)
+        		.getExecutor("jdbc", this)
+        		.queryForObject(new GetViewDefinitionStatement(schema.getCatalogName(), schema.getSchemaName(), viewName), String.class);
+        if (definition == null) {
+            return null;
+        }
+        return definition;
     }
 }
